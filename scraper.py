@@ -1,5 +1,5 @@
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 import http.client
 import os
@@ -7,13 +7,24 @@ import os
 urls_visited = []
 blacklisted = []
 dead_urls = []
-
+file_of_all_links_found = "all_found_links.txt"
 longest_page = ["empty", 0]
 
+
 def scraper(url, resp):
+    #If we have a 3XX code we want to redirect to the actual page
+    redirect_status_codes = [301, 302, 307, 308]
+    if resp.status in redirect_status_codes:
+        url, resp = redirected_page(url)
+
     links = extract_next_links(url, resp)
 
-    return [link for link in links if is_valid(link)]
+    #take a link and check if it's inside of the set
+    
+    new_links = only_new_links(links, file_of_all_links_found)
+    
+    return [link for link in new_links if is_valid(link)]
+
 
 def extract_next_links(url, resp):
     # Implementation required.
@@ -33,25 +44,13 @@ def extract_next_links(url, resp):
     ###Code that was added to get all the URLs from a site, test parsing the site's text, and printing everything.
     ###Most is just a test and can be removed later, the important part here is knowing how to tokenize the page and the URLs for this function
     ####Last 4 functions in this file are helper, tokenize and url grab
-    print(resp.status)
-
-    redirects = [301,302]
-    if resp.status in redirects:
-        redirected = resp.url
-        print (redirected)
-
-        if redirected != url:
-            print(f"Redirect detected: {url} -> {redirected}")
-            return [redirected]
-
-    
     if resp.status != 200:
         return list()
     
     urlList = getURLs(resp.raw_response.content)
     TokenList = tokenize(resp.raw_response.content)
-    
-    #report Question #2
+
+    #report Question #2 Doesn't work 
     tokenListLen = len(TokenList)
     if tokenListLen >= longest_page[1]:
         longest_page[1] == tokenListLen
@@ -60,6 +59,11 @@ def extract_next_links(url, resp):
     TokenCount = computeWordFrequencies(TokenList)
     storeWordFrequencies(TokenCount) #report Question #3
 
+
+    printFrequencies(TokenCount)
+    print("These are the URLs found:")
+    for url in urlList:
+        print(url)
 
     return urlList
 
@@ -80,8 +84,8 @@ def is_valid(url):
 
     
         #check to make sure that netloc is correct and that we can continue to check the path below (aka we don't want to return True too soon)
-        domains = {"ics", "cs", "informatics", "stat"}
-        #domains = {"ics"}
+        # domains = {"ics", "cs", "informatics", "stat"}
+        domains = {"ics"}
         SplitNetlock = parsed.netloc.split(".")
         if len(SplitNetlock) <= 2:
             return False
@@ -131,7 +135,7 @@ def is_valid(url):
 
             #get expected length
             expected_length = len(cleanedText)
-            #print(f"{expected_length}: got content length ")
+            print(f"{expected_length}: got content length ")
             
             if expected_length != None:
                 if check_not_dead_url(url, response, expected_length) == False:
@@ -161,16 +165,56 @@ def is_valid(url):
         print ("TypeError for ", parsed)
         raise
 
+def only_new_links(input_links, file_of_all_links_found) -> list:
+    return_links = []
+    if os.path.exists(file_of_all_links_found):
+        with open(file_of_all_links_found, "r") as file:
+            all_links = file.readlines()
+        
+        all_links = [link.strip() for link in all_links]
+    else:
+        all_links = []
+        
+    #find new links only
+    for link in input_links:
+        if link not in all_links: 
+            return_links.append(link)
+
+    # Append new links to the file at the end
+    with open(file_of_all_links_found, "a+") as file:
+        for new_link in return_links:
+            file.write(new_link + "\n")  # Add a newline after each link
+
+    return return_links
 
 
+def redirected_page(url):
+    """
+    fetch the redirct link and make that the normal link
+    """
+    parsed_url = urlparse(url)
 
+    if parsed_url.scheme == 'https':
+        connect = http.client.HTTPSConnection(parsed_url.netloc)
+    else:
+        connect = http.client.HTTPConnection(parsed_url.netloc)
+    
+    connect.request("GET", parsed_url.path)
+    response = connect.getresponse()
+    location_header=response.getheader('Location')
+    
+    if location_header:
+            redirected_url = urljoin(url, location_header) #absolute url
+            new_parsed_url = urlparse(redirected_url) #redirect to get resp
+            if new_parsed_url.scheme == 'https':
+                new_connect = http.client.HTTPSConnection(new_parsed_url.netloc)
+            else:
+                new_connect = http.client.HTTPConnection(new_parsed_url.netloc)
 
+            new_connect.request("GET", new_parsed_url.path)
+            new_response = new_connect.getresponse()
 
-
-
-
-
-
+    return redirected_url, new_response
 
 
 
@@ -298,6 +342,7 @@ def exact_duplicates(expected_length):
     Check it against the files that have already been accepted 
     #if its duplicate return True
     """
+    print("EXACT DUPES")
     with open("valid_url.txt", "r", encoding="utf-8") as file:
         all_lines = file.readlines()
 
@@ -313,6 +358,7 @@ def file_too_large(expected_length) -> bool:
     """
     Requirement: Detect and avoid crawling very large files, especially if they have low information value
     """
+    print("LARGE FILE")
     if expected_length >= 2000000:
         print("~20MB")
         return True
@@ -332,21 +378,17 @@ def check_not_dead_url(url, response, expected_length) ->bool:
     """
     
     try:
-        #Check if this is still needed
-        if response.status != 200:
-        #    print(f"URL returned {response.status_code}: {url} ")
-            return False
-        
+        print("DEAD URL")
         #Empty page
         if expected_length == 0:
             #print("Empty Page")
             dead_urls.append(url)
-            return False
+            return True
         
         #page with less than 100 words (number can be changed)
         if expected_length <= 100: 
             dead_urls.append(url)
-            return False
+            return True
             
         return True
     except http.client.HTTPException as e:
@@ -354,9 +396,9 @@ def check_not_dead_url(url, response, expected_length) ->bool:
 
     if expected_length <= 100:
         print(f"this is the length {expected_length} maybe manually check for now! {url} ")
-        return False
+        return True
         
-    return True
+    return False
         
 #Crawler behavior Requirements: Detect redirects and if the page redirects your crawler, index the redirected content
 #Crawler behabior Requirements: Detect and avoid crawling very large files, especially if they have low information value (Anyone have any good ideas on how to do this?)
